@@ -528,7 +528,16 @@
     let lastErr = null;
     for (let i = 0; i < attempts.length; i++){
       try{
-        state.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: attempts[i] });
+        state.stream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: false,
+            autoGainControl: false,
+            sampleRate: { ideal: 48000 },
+            channelCount: { ideal: 1 }
+          },
+          video: attempts[i]
+        });
         const s = state.stream.getVideoTracks()[0].getSettings();
         if (s.width && s.height && s.width > s.height && i < attempts.length - 1){
           state.stream.getTracks().forEach(t => t.stop());
@@ -769,8 +778,8 @@
     state.chunks = [];
     const recStream = startRecordingStream();
     try{
-      state.recorder = mime ? new MediaRecorder(recStream, { mimeType: mime, videoBitsPerSecond: 8000000 })
-                            : new MediaRecorder(recStream, { videoBitsPerSecond: 8000000 });
+      state.recorder = mime ? new MediaRecorder(recStream, { mimeType: mime, videoBitsPerSecond: 4500000, audioBitsPerSecond: 128000 })
+                            : new MediaRecorder(recStream, { videoBitsPerSecond: 4500000, audioBitsPerSecond: 128000 });
     }catch(e){
       stopRecordingStream();
       alert("Recording could not start: " + e.message);
