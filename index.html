@@ -7,13 +7,13 @@
 <title>Prompter — camera teleprompter</title>
 <style>
   :root{
-    --ink:#101418;          /* studio charcoal */
-    --panel:#1a2026;        /* raised panel */
-    --line:#2c343c;         /* hairline */
-    --paper:#f3efe7;        /* warm script paper */
-    --paper-dim:#b9b4a8;    /* secondary text */
-    --cue:#e8b341;          /* amber cue */
-    --rec:#e4452f;          /* on-air red */
+    --ink:#101418;
+    --panel:#1a2026;
+    --line:#2c343c;
+    --paper:#f3efe7;
+    --paper-dim:#b9b4a8;
+    --cue:#e8b341;
+    --rec:#e4452f;
     --ok:#5fae7e;
     --display:"Noto Serif", Georgia, "Times New Roman", serif;
     --ui:system-ui, Roboto, "Segoe UI", sans-serif;
@@ -103,6 +103,14 @@
     background:rgba(0,0,0,.45);padding:3px 9px;border-radius:999px;border:1px solid rgba(255,255,255,.18);
   }
   #capBadge:empty{display:none}
+  #zoomHint{
+    position:absolute;left:50%;transform:translateX(-50%);
+    bottom:calc(150px + env(safe-area-inset-bottom));z-index:6;
+    font-size:12px;background:rgba(0,0,0,.7);color:var(--paper);
+    padding:7px 14px;border-radius:999px;border:1px solid rgba(255,255,255,.2);
+    display:none;max-width:84%;text-align:center;line-height:1.4;
+  }
+  #zoomHint.show{display:block}
 
   .topBar{
     position:absolute;top:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;
@@ -225,7 +233,7 @@
   </div>
 
   <button id="openCameraBtn" type="button">Open camera</button>
-  <p class="note">Works best in Chrome on Android, held in portrait. You will be asked for camera and microphone permission the first time. Tap the scrolling text at any point to pause or resume it.</p>
+  <p class="note">Works best in Chrome on Android, held upright in portrait. The recording screen goes fullscreen and locks to portrait, which helps the camera give its widest portrait view. Tap the scrolling text at any point to pause or resume it.</p>
 </div>
 
 <!-- ================= PROMPTER ================= -->
@@ -241,6 +249,7 @@
   <div id="cueLine"></div>
   <div id="pauseBadge">Paused — tap text to resume</div>
   <div id="capBadge"></div>
+  <div id="zoomHint"></div>
 
   <div class="topBar">
     <button class="roundBtn" id="closePromptBtn" aria-label="Back to script">✕</button>
@@ -301,24 +310,20 @@
   // If anything goes wrong at runtime, say so on screen rather than failing silently.
   window.addEventListener("error", ev => {
     try{
-      const ids = ["setupError", "storyError", "scriptError"];
-      for (const id of ids){
-        const el = document.getElementById(id);
-        if (el){
-          el.textContent = "App error: " + (ev.message || ev.error || "unknown") +
-            (ev.lineno ? " (line " + ev.lineno + ")" : "");
-          el.classList.add("show");
-          break;
-        }
+      const el = document.getElementById("setupError");
+      if (el){
+        el.textContent = "App error: " + (ev.message || ev.error || "unknown") +
+          (ev.lineno ? " (line " + ev.lineno + ")" : "");
+        el.classList.add("show");
       }
     }catch(e){}
   });
 
   // ---------- State (in memory only) ----------
   const state = {
-    fontSize: 34,        // px
-    speed: 4,            // 1..10
-    countdown: 3,        // seconds
+    fontSize: 34,
+    speed: 4,
+    countdown: 3,
     mirror: true,
     facing: "user",
     stream: null,
@@ -352,7 +357,7 @@
   function updateReadout(){
     const words = scriptInput.value.trim().split(/\s+/).filter(Boolean).length;
     $("wordCount").textContent = words;
-    const secs = Math.round(words / 150 * 60); // ~150 wpm spoken
+    const secs = Math.round(words / 150 * 60);
     $("readTime").textContent = Math.floor(secs/60) + ":" + String(secs%60).padStart(2,"0");
   }
   scriptInput.addEventListener("input", updateReadout);
@@ -400,8 +405,8 @@
   // ---------- Camera ----------
   const cameraFeed = $("cameraFeed");
 
-  // Zoom: optical via the camera where the device supports it, digital otherwise
   let zoomTrack = null, zoomRange = null, zoomValue = 1, zoomDigital = 1;
+  let zoomHintTimer = null;
 
   function applyMirror(){
     const mir = state.mirror && state.facing === "user";
@@ -409,37 +414,35 @@
     if (recCanvas) recCanvas.classList.toggle("mirrored", mir);
   }
 
-  // Live preview canvas: the recording captures this exact canvas, so framing,
-  // zoom and the blurred letterbox you see are precisely what gets saved.
-  let recCanvas = null, recCtx = null, bgCanvas = null, bgCtx = null, drawRaf = null;
+  // Live preview canvas: the recording captures this exact canvas, so the framing
+  // you see is precisely what gets saved. The image always fills the frame; there
+  // is no letterbox or blur mode in this build.
+  let recCanvas = null, recCtx = null, drawRaf = null;
   function initPreviewCanvas(){
     recCanvas = $("previewCanvas");
     recCanvas.width = 1080; recCanvas.height = 1920;
     recCtx = recCanvas.getContext("2d");
-    bgCanvas = document.createElement("canvas");
-    bgCanvas.width = 54; bgCanvas.height = 96;
-    bgCtx = bgCanvas.getContext("2d");
   }
   function drawFrame(){
     const v = cameraFeed, vw = v.videoWidth, vh = v.videoHeight;
     if (vw && vh){
       const TW = recCanvas.width, TH = recCanvas.height;
       const scale = Math.max(TW / vw, TH / vh) * zoomDigital;
-      const dw = vw * scale, dh = vh * scale;
-      if (dw < TW - 0.5 || dh < TH - 0.5){
-        bgCtx.drawImage(v, 0, 0, bgCanvas.width, bgCanvas.height);
-        recCtx.drawImage(bgCanvas, 0, 0, TW, TH);
-        recCtx.fillStyle = "rgba(10,12,14,0.45)";
-        recCtx.fillRect(0, 0, TW, TH);
-      }
-      const sw = Math.min(vw, TW / scale), sh = Math.min(vh, TH / scale);
-      const ddw = sw * scale, ddh = sh * scale;
-      recCtx.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, (TW - ddw) / 2, (TH - ddh) / 2, ddw, ddh);
+      const sw = TW / scale, sh = TH / scale;
+      recCtx.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, TW, TH);
     }
     drawRaf = requestAnimationFrame(drawFrame);
   }
   function startFrameLoop(){ if (drawRaf === null){ drawRaf = requestAnimationFrame(drawFrame); } }
   function stopFrameLoop(){ if (drawRaf !== null){ cancelAnimationFrame(drawRaf); drawRaf = null; } }
+
+  function showZoomHint(msg){
+    const el = $("zoomHint");
+    el.textContent = msg;
+    el.classList.add("show");
+    clearTimeout(zoomHintTimer);
+    zoomHintTimer = setTimeout(() => el.classList.remove("show"), 2400);
+  }
 
   function initZoom(track){
     zoomTrack = null; zoomRange = null; zoomDigital = 1; zoomValue = 1;
@@ -457,23 +460,36 @@
   function updateZoomLabel(){
     const el = $("zoomLive");
     if (!el) return;
-    const shown = zoomDigital < 0.999 ? zoomDigital : (zoomTrack ? zoomValue : zoomDigital);
+    const shown = zoomDigital > 1 ? zoomDigital : (zoomTrack ? zoomValue : 1);
     el.textContent = shown.toFixed(1) + "x";
   }
   async function bumpZoom(d){
     const hasOptical = !!(zoomTrack && zoomRange);
-    const opticalAtMin = hasOptical && zoomValue <= zoomRange.min + 0.001;
-    const useDigital = !hasOptical || zoomDigital < 0.999 || (d < 0 && opticalAtMin);
-    if (useDigital){
-      zoomDigital = Math.min(3, Math.max(0.4, +(zoomDigital + d * 0.2).toFixed(2)));
-      if (hasOptical && zoomDigital > 1) zoomDigital = 1;
+    if (hasOptical && zoomDigital <= 1){
+      const atMin = zoomValue <= zoomRange.min + 0.001;
+      const atMax = zoomValue >= zoomRange.max - 0.001;
+      if (d < 0 && atMin){
+        showZoomHint("Widest view already — move the phone a little further away for more room");
+      } else if (d > 0 && atMax){
+        zoomDigital = Math.min(3, +(zoomDigital + 0.2).toFixed(2));
+      } else {
+        const step = Math.max(zoomRange.step || 0.1, (zoomRange.max - zoomRange.min) / 12);
+        const v = Math.min(zoomRange.max, Math.max(zoomRange.min, zoomValue + d * step));
+        try{
+          await zoomTrack.applyConstraints({ advanced: [{ zoom: v }] });
+          zoomValue = v;
+        }catch(e){}
+      }
     } else {
-      const step = Math.max(zoomRange.step || 0.1, (zoomRange.max - zoomRange.min) / 12);
-      const v = Math.min(zoomRange.max, Math.max(zoomRange.min, zoomValue + d * step));
-      try{
-        await zoomTrack.applyConstraints({ advanced: [{ zoom: v }] });
-        zoomValue = v;
-      }catch(e){}
+      if (d < 0 && zoomDigital <= 1){
+        if (hasOptical){
+          zoomDigital = 1;
+        } else {
+          showZoomHint("Widest view already — move the phone a little further away for more room");
+        }
+      } else {
+        zoomDigital = Math.min(3, Math.max(1, +(zoomDigital + d * 0.2).toFixed(2)));
+      }
     }
     updateZoomLabel();
   }
@@ -490,5 +506,396 @@
 
   async function startCamera(){
     stopCamera();
-    // Demand portrait capture outright before falling back; many Android cameras
-    // only hand over a portrait feed when asked w
+    // Fullscreen + a portrait orientation lock makes Android treat this page like a
+    // camera app, which persuades it to deliver a true rotated portrait feed even if
+    // the phone is lying flat or tilted when the camera starts.
+    try{
+      if (!document.fullscreenElement) await document.documentElement.requestFullscreen();
+    }catch(e){}
+    try{
+      if (screen.orientation && screen.orientation.lock) await screen.orientation.lock("portrait");
+    }catch(e){}
+    // Prefer the camera's native portrait modes at full field of view. Exact-size
+    // requests come last because the browser satisfies them by cropping into the
+    // image, which makes the shot feel zoomed in.
+    const attempts = [
+      { facingMode: state.facing, width: { ideal: 1440 }, height: { ideal: 1920 }, resizeMode: { ideal: "none" } },
+      { facingMode: state.facing, width: { ideal: 1080 }, height: { ideal: 1920 }, resizeMode: { ideal: "none" } },
+      { facingMode: state.facing, width: { ideal: 1080 }, height: { ideal: 1920 } },
+      { facingMode: state.facing, width: { exact: 1080 }, height: { exact: 1920 } },
+      { facingMode: state.facing }
+    ];
+    let lastErr = null;
+    for (let i = 0; i < attempts.length; i++){
+      try{
+        state.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: attempts[i] });
+        const s = state.stream.getVideoTracks()[0].getSettings();
+        if (s.width && s.height && s.width > s.height && i < attempts.length - 1){
+          state.stream.getTracks().forEach(t => t.stop());
+          state.stream = null;
+          continue;
+        }
+        break;
+      }catch(e){
+        lastErr = e; state.stream = null;
+        if (e && (e.name === "NotAllowedError" || e.name === "SecurityError")) throw e;
+      }
+    }
+    if (!state.stream) throw (lastErr || new Error("Camera unavailable"));
+    const track = state.stream.getVideoTracks()[0];
+    try{
+      const s = track.getSettings();
+      if (s.width && s.height && s.width > s.height){
+        try{ await track.applyConstraints({ width: { ideal: 1080 }, height: { ideal: 1920 }, aspectRatio: { ideal: 9 / 16 } }); }catch(e1){}
+      }
+    }catch(e){}
+    updateCaptureBadge(track);
+    initZoom(track);
+    cameraFeed.srcObject = state.stream;
+    try{ await cameraFeed.play(); }catch(e){}
+    applyMirror();
+  }
+
+  function stopCamera(){
+    if (state.stream){
+      state.stream.getTracks().forEach(t => t.stop());
+      state.stream = null;
+    }
+    try{ if (document.fullscreenElement) document.exitFullscreen(); }catch(e){}
+    try{ if (screen.orientation && screen.orientation.unlock) screen.orientation.unlock(); }catch(e){}
+  }
+
+  $("openCameraBtn").addEventListener("click", async () => {
+    $("setupError").classList.remove("show");
+    if (!scriptInput.value.trim()){
+      setupError("Add a script first. Even a few lines will do.");
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      setupError("This browser cannot access the camera. Open this page in Chrome on Android over HTTPS.");
+      return;
+    }
+    if (typeof MediaRecorder === "undefined"){
+      setupError("This browser cannot record video (MediaRecorder is unavailable). Try the latest version of Chrome.");
+      return;
+    }
+    const btn = $("openCameraBtn");
+    btn.disabled = true;
+    btn.textContent = "Requesting camera…";
+    try{
+      await startCamera();
+      prepareScrollText();
+      resetScroll();
+      startFrameLoop();
+      showView("prompt");
+      requestWakeLock();
+    }catch(err){
+      if (err && (err.name === "NotAllowedError" || err.name === "SecurityError")){
+        setupError("Camera permission was refused. Allow camera and microphone access for this page in Chrome's site settings, then try again.");
+      }else if (err && err.name === "NotFoundError"){
+        setupError("No camera was found on this device.");
+      }else{
+        setupError("Could not start the camera: " + (err && err.message ? err.message : err));
+      }
+    }finally{
+      btn.disabled = false;
+      btn.textContent = "Open camera";
+    }
+  });
+
+  $("flipCamBtn").addEventListener("click", async () => {
+    if (state.recording) return;
+    state.facing = state.facing === "user" ? "environment" : "user";
+    try{ await startCamera(); }
+    catch(e){ state.facing = state.facing === "user" ? "environment" : "user"; }
+  });
+
+  // ---------- Wake lock ----------
+  async function requestWakeLock(){
+    try{
+      if ("wakeLock" in navigator){
+        state.wakeLock = await navigator.wakeLock.request("screen");
+      }
+    }catch(e){}
+  }
+  function releaseWakeLock(){
+    if (state.wakeLock){ state.wakeLock.release().catch(()=>{}); state.wakeLock = null; }
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && views.prompt.classList.contains("active")){
+      requestWakeLock();
+    }
+  });
+
+  // ---------- Teleprompter scroll ----------
+  const scrollZone = $("scrollZone");
+  const scrollText = $("scrollText");
+
+  function prepareScrollText(){
+    scrollText.textContent = scriptInput.value;
+    scrollText.style.fontSize = state.fontSize + "px";
+  }
+
+  function cueOffset(){
+    return window.innerHeight * 0.24;
+  }
+
+  function resetScroll(){
+    state.scrollY = -cueOffset() - 10;
+    renderScroll();
+    setScrolling(false);
+  }
+
+  function renderScroll(){
+    scrollText.style.transform = "translateY(" + (-state.scrollY) + "px)";
+  }
+
+  function pxPerSecond(){
+    return state.speed * state.fontSize * 0.55;
+  }
+
+  function setScrolling(on){
+    state.scrolling = on;
+    $("pauseBadge").classList.toggle("show", !on && views.prompt.classList.contains("active"));
+    if (on && state.rafId === null){
+      state.lastFrame = performance.now();
+      state.rafId = requestAnimationFrame(tick);
+    }
+  }
+
+  function tick(now){
+    state.rafId = null;
+    if (!views.prompt.classList.contains("active")) return;
+    if (state.scrolling){
+      const dt = (now - state.lastFrame) / 1000;
+      state.lastFrame = now;
+      state.scrollY += pxPerSecond() * dt;
+      const max = scrollText.offsetHeight + 40;
+      if (state.scrollY >= max){
+        state.scrollY = max;
+        setScrolling(false);
+      }
+      renderScroll();
+      state.rafId = requestAnimationFrame(tick);
+    }
+  }
+
+  scrollZone.addEventListener("click", () => {
+    setScrolling(!state.scrolling);
+  });
+
+  $("restartTextBtn").addEventListener("click", () => resetScroll());
+
+  function bumpSpeed(d){
+    state.speed = Math.min(10, Math.max(1, state.speed + d));
+    refreshSettingLabels();
+  }
+  function bumpFont(d){
+    state.fontSize = Math.min(64, Math.max(20, state.fontSize + d * 2));
+    scrollText.style.fontSize = state.fontSize + "px";
+    refreshSettingLabels();
+  }
+  $("speedUp").addEventListener("click", () => bumpSpeed(1));
+  $("speedDown").addEventListener("click", () => bumpSpeed(-1));
+  $("fontUp").addEventListener("click", () => bumpFont(1));
+  $("fontDown").addEventListener("click", () => bumpFont(-1));
+  $("zoomInBtn").addEventListener("click", () => bumpZoom(1));
+  $("zoomOutBtn").addEventListener("click", () => bumpZoom(-1));
+
+  // ---------- Recording ----------
+  let canvasStream = null;
+  function startRecordingStream(){
+    canvasStream = recCanvas.captureStream(30);
+    return new MediaStream([ ...canvasStream.getVideoTracks(), ...state.stream.getAudioTracks() ]);
+  }
+  function stopRecordingStream(){
+    if (canvasStream){ canvasStream.getTracks().forEach(t => t.stop()); canvasStream = null; }
+  }
+
+  function pickMimeType(){
+    const candidates = [
+      ["video/mp4;codecs=avc1,mp4a.40.2", "mp4"],
+      ["video/mp4", "mp4"],
+      ["video/webm;codecs=vp9,opus", "webm"],
+      ["video/webm;codecs=vp8,opus", "webm"],
+      ["video/webm", "webm"]
+    ];
+    for (const [m, ext] of candidates){
+      if (MediaRecorder.isTypeSupported(m)) return { mime: m, ext };
+    }
+    return { mime: "", ext: "webm" };
+  }
+
+  let countdownAbort = false;
+
+  function runCountdown(seconds){
+    return new Promise(resolve => {
+      if (seconds <= 0){ resolve(true); return; }
+      countdownAbort = false;
+      const overlay = $("countdownOverlay");
+      const num = $("countdownNum");
+      let n = seconds;
+      num.textContent = n;
+      overlay.classList.add("show");
+      const iv = setInterval(() => {
+        if (countdownAbort){
+          clearInterval(iv); overlay.classList.remove("show"); resolve(false); return;
+        }
+        n -= 1;
+        if (n <= 0){
+          clearInterval(iv); overlay.classList.remove("show"); resolve(true);
+        }else{
+          num.textContent = n;
+        }
+      }, 1000);
+    });
+  }
+
+  $("countdownOverlay").addEventListener("click", () => { countdownAbort = true; });
+
+  const recordBtn = $("recordBtn");
+
+  recordBtn.addEventListener("click", async () => {
+    if (state.recording){ stopRecording(); return; }
+    if (!state.stream) return;
+
+    recordBtn.disabled = true;
+    const proceed = await runCountdown(state.countdown);
+    recordBtn.disabled = false;
+    if (!proceed) return;
+
+    const { mime, ext } = pickMimeType();
+    state.mimeType = mime; state.ext = ext;
+    state.chunks = [];
+    const recStream = startRecordingStream();
+    try{
+      state.recorder = mime ? new MediaRecorder(recStream, { mimeType: mime, videoBitsPerSecond: 8000000 })
+                            : new MediaRecorder(recStream, { videoBitsPerSecond: 8000000 });
+    }catch(e){
+      stopRecordingStream();
+      alert("Recording could not start: " + e.message);
+      return;
+    }
+    state.recorder.ondataavailable = e => { if (e.data && e.data.size) state.chunks.push(e.data); };
+    state.recorder.onstop = onRecorderStop;
+    state.recorder.start(1000);
+
+    state.recording = true;
+    recordBtn.classList.add("recording");
+    $("recIndicator").classList.add("show");
+    state.recStart = Date.now();
+    updateRecTimer();
+    state.recTimerId = setInterval(updateRecTimer, 500);
+    setScrolling(true);
+  });
+
+  function updateRecTimer(){
+    const s = Math.floor((Date.now() - state.recStart) / 1000);
+    $("recTimer").textContent = Math.floor(s/60) + ":" + String(s%60).padStart(2,"0");
+  }
+
+  function stopRecording(){
+    if (!state.recording) return;
+    state.recording = false;
+    setScrolling(false);
+    clearInterval(state.recTimerId);
+    recordBtn.classList.remove("recording");
+    $("recIndicator").classList.remove("show");
+    if (state.recorder && state.recorder.state !== "inactive"){
+      state.recorder.stop();
+    }
+  }
+
+  function onRecorderStop(){
+    stopRecordingStream();
+    stopFrameLoop();
+    if (!state.chunks.length){ return; }
+    if (state.blobUrl) URL.revokeObjectURL(state.blobUrl);
+    state.blob = new Blob(state.chunks, { type: state.mimeType || "video/webm" });
+    state.blobUrl = URL.createObjectURL(state.blob);
+    const pb = $("playback");
+    pb.src = state.blobUrl;
+    const mb = (state.blob.size / (1024*1024)).toFixed(1);
+    $("fileMeta").textContent = "Format: ." + state.ext + "  ·  Size: " + mb + " MB  ·  Saved file is unmirrored.";
+    stopCamera();
+    releaseWakeLock();
+    showView("review");
+  }
+
+  // ---------- Prompter top bar ----------
+  $("closePromptBtn").addEventListener("click", () => {
+    if (state.recording){
+      if (!confirm("Stop recording and discard this take?")) return;
+      state.recording = false;
+      clearInterval(state.recTimerId);
+      if (state.recorder && state.recorder.state !== "inactive"){
+        state.recorder.ondataavailable = null;
+        state.recorder.onstop = null;
+        state.recorder.stop();
+      }
+      recordBtn.classList.remove("recording");
+      $("recIndicator").classList.remove("show");
+      stopRecordingStream();
+    }
+    setScrolling(false);
+    stopFrameLoop();
+    stopCamera();
+    releaseWakeLock();
+    showView("setup");
+  });
+
+  // ---------- Review ----------
+  let saveBusy = false;
+  $("saveBtn").addEventListener("click", () => {
+    if (!state.blob || saveBusy) return;
+    saveBusy = true;
+    const btn = $("saveBtn");
+    const original = btn.textContent;
+    btn.textContent = "Saving — check your notification bar";
+    const a = document.createElement("a");
+    a.href = state.blobUrl;
+    a.download = "prompter-take-" + new Date().toISOString().replace(/[:.]/g,"-").slice(0,19) + "." + state.ext;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => { btn.textContent = original; saveBusy = false; }, 3000);
+  });
+
+  $("shareBtn").addEventListener("click", async () => {
+    if (!state.blob) return;
+    const file = new File([state.blob], "prompter-take." + state.ext, { type: state.blob.type });
+    if (navigator.canShare && navigator.canShare({ files: [file] })){
+      try{ await navigator.share({ files: [file], title: "Prompter take" }); }
+      catch(e){}
+    }else{
+      alert("Direct sharing is not available in this browser. Use Save video, then share the file from your gallery or Files app.");
+    }
+  });
+
+  $("retakeBtn").addEventListener("click", async () => {
+    try{
+      await startCamera();
+      prepareScrollText();
+      resetScroll();
+      startFrameLoop();
+      showView("prompt");
+      requestWakeLock();
+    }catch(e){
+      showView("setup");
+      setupError("Could not restart the camera: " + (e && e.message ? e.message : e));
+    }
+  });
+
+  $("editBtn").addEventListener("click", () => showView("setup"));
+
+  // ---------- Init ----------
+  initPreviewCanvas();
+  refreshSettingLabels();
+  updateReadout();
+  window.addEventListener("orientationchange", () => {
+    if (views.prompt.classList.contains("active") && !state.recording) resetScroll();
+  });
+})();
+</script>
+</body>
+</html>
