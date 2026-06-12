@@ -96,6 +96,12 @@
     padding:4px 10px;border-radius:999px;display:none;
   }
   #pauseBadge.show{display:block}
+  #capBadge{
+    position:absolute;bottom:calc(118px + env(safe-area-inset-bottom));left:14px;z-index:5;
+    font-size:10px;letter-spacing:.06em;color:rgba(243,239,231,.85);
+    background:rgba(0,0,0,.45);padding:3px 9px;border-radius:999px;border:1px solid rgba(255,255,255,.18);
+  }
+  #capBadge:empty{display:none}
 
   .topBar{
     position:absolute;top:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;
@@ -233,6 +239,7 @@
   </div>
   <div id="cueLine"></div>
   <div id="pauseBadge">Paused — tap text to resume</div>
+  <div id="capBadge"></div>
 
   <div class="topBar">
     <button class="roundBtn" id="closePromptBtn" aria-label="Back to script">✕</button>
@@ -453,21 +460,51 @@
     updateZoomLabel();
   }
 
+  function updateCaptureBadge(track){
+    try{
+      const s = track.getSettings();
+      const el = $("capBadge");
+      if (el && s.width && s.height){
+        el.textContent = "Camera " + s.width + "\u00d7" + s.height + (s.width > s.height ? " \u2014 landscape feed" : "");
+      }
+    }catch(e){}
+  }
+
   async function startCamera(){
     stopCamera();
-    state.stream = await navigator.mediaDevices.getUserMedia({
-      audio: true,
-      video: { facingMode: state.facing, width: { ideal: 1080 }, height: { ideal: 1920 }, aspectRatio: { ideal: 9/16 } }
-    });
+    // Demand portrait capture outright before falling back; many Android cameras
+    // only hand over a portrait feed when asked with exact constraints.
+    const attempts = [
+      { facingMode: state.facing, width: { exact: 1080 }, height: { exact: 1920 } },
+      { facingMode: state.facing, width: { exact: 720 }, height: { exact: 1280 } },
+      { facingMode: state.facing, aspectRatio: { exact: 9 / 16 } },
+      { facingMode: state.facing, width: { ideal: 1080 }, height: { ideal: 1920 }, aspectRatio: { ideal: 9 / 16 } },
+      { facingMode: state.facing }
+    ];
+    let lastErr = null;
+    for (const video of attempts){
+      try{
+        state.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video });
+        break;
+      }catch(e){
+        lastErr = e; state.stream = null;
+        // Permission refusals will repeat on every attempt; stop immediately.
+        if (e && (e.name === "NotAllowedError" || e.name === "SecurityError")) throw e;
+      }
+    }
+    if (!state.stream) throw (lastErr || new Error("Camera unavailable"));
     const track = state.stream.getVideoTracks()[0];
-    // Some Android cameras hand over landscape frames even held upright; asking again for
-    // portrait uses the sensor's long axis vertically and widens the shot considerably.
     try{
       const s = track.getSettings();
       if (s.width && s.height && s.width > s.height){
-        await track.applyConstraints({ width: { ideal: 1080 }, height: { ideal: 1920 }, aspectRatio: { ideal: 9/16 } });
+        try{
+          await track.applyConstraints({ width: { exact: s.height }, height: { exact: s.width } });
+        }catch(e1){
+          try{ await track.applyConstraints({ width: { ideal: 1080 }, height: { ideal: 1920 }, aspectRatio: { ideal: 9 / 16 } }); }catch(e2){}
+        }
       }
     }catch(e){}
+    updateCaptureBadge(track);
     initZoom(track);
     cameraFeed.srcObject = state.stream;
     applyMirror();
