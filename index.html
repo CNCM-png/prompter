@@ -66,8 +66,9 @@
   /* ---------- Prompter ---------- */
   #promptView{background:#000}
   #cameraWrap{position:absolute;inset:0;overflow:hidden}
-  #cameraFeed{width:100%;height:100%;object-fit:cover}
-  #cameraFeed.mirrored{transform:scaleX(-1)}
+  #cameraFeed{display:none}
+  #previewCanvas{width:100%;height:100%;object-fit:cover}
+  #previewCanvas.mirrored{transform:scaleX(-1)}
   #scrollZone{
     position:absolute;top:0;left:0;right:0;height:58%;
     overflow:hidden;
@@ -224,6 +225,7 @@
 <div class="view" id="promptView">
   <div id="cameraWrap">
     <video id="cameraFeed" autoplay playsinline muted></video>
+    <canvas id="previewCanvas"></canvas>
   </div>
 
   <div id="scrollZone">
@@ -379,8 +381,40 @@
 
   function applyMirror(){
     const mir = state.mirror && state.facing === "user";
-    cameraFeed.style.transform = (mir ? "scaleX(-1)" : "") + (zoomDigital > 1 ? " scale(" + zoomDigital + ")" : "");
+    if (recCanvas) recCanvas.classList.toggle("mirrored", mir);
   }
+
+  // Live preview canvas: the recording captures this exact canvas, so framing,
+  // zoom and the blurred letterbox you see are precisely what gets saved.
+  let recCanvas = null, recCtx = null, bgCanvas = null, bgCtx = null, drawRaf = null;
+  function initPreviewCanvas(){
+    recCanvas = $("previewCanvas");
+    recCanvas.width = 1080; recCanvas.height = 1920;
+    recCtx = recCanvas.getContext("2d");
+    bgCanvas = document.createElement("canvas");
+    bgCanvas.width = 54; bgCanvas.height = 96;
+    bgCtx = bgCanvas.getContext("2d");
+  }
+  function drawFrame(){
+    const v = cameraFeed, vw = v.videoWidth, vh = v.videoHeight;
+    if (vw && vh){
+      const TW = recCanvas.width, TH = recCanvas.height;
+      const scale = Math.max(TW / vw, TH / vh) * zoomDigital;
+      const dw = vw * scale, dh = vh * scale;
+      if (dw < TW - 0.5 || dh < TH - 0.5){
+        bgCtx.drawImage(v, 0, 0, bgCanvas.width, bgCanvas.height);
+        recCtx.drawImage(bgCanvas, 0, 0, TW, TH);
+        recCtx.fillStyle = "rgba(10,12,14,0.45)";
+        recCtx.fillRect(0, 0, TW, TH);
+      }
+      const sw = Math.min(vw, TW / scale), sh = Math.min(vh, TH / scale);
+      const ddw = sw * scale, ddh = sh * scale;
+      recCtx.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, (TW - ddw) / 2, (TH - ddh) / 2, ddw, ddh);
+    }
+    drawRaf = requestAnimationFrame(drawFrame);
+  }
+  function startFrameLoop(){ if (drawRaf === null){ drawRaf = requestAnimationFrame(drawFrame); } }
+  function stopFrameLoop(){ if (drawRaf !== null){ cancelAnimationFrame(drawRaf); drawRaf = null; } }
 
   function initZoom(track){
     zoomTrack = null; zoomRange = null; zoomDigital = 1; zoomValue = 1;
@@ -397,20 +431,24 @@
   }
   function updateZoomLabel(){
     const el = $("zoomLive");
-    if (el) el.textContent = zoomValue.toFixed(1) + "x";
+    if (!el) return;
+    const shown = zoomDigital < 0.999 ? zoomDigital : (zoomTrack ? zoomValue : zoomDigital);
+    el.textContent = shown.toFixed(1) + "x";
   }
   async function bumpZoom(d){
-    if (zoomTrack && zoomRange){
+    const hasOptical = !!(zoomTrack && zoomRange);
+    const opticalAtMin = hasOptical && zoomValue <= zoomRange.min + 0.001;
+    const useDigital = !hasOptical || zoomDigital < 0.999 || (d < 0 && opticalAtMin);
+    if (useDigital){
+      zoomDigital = Math.min(3, Math.max(0.4, +(zoomDigital + d * 0.2).toFixed(2)));
+      if (hasOptical && zoomDigital > 1) zoomDigital = 1;
+    } else {
       const step = Math.max(zoomRange.step || 0.1, (zoomRange.max - zoomRange.min) / 12);
       const v = Math.min(zoomRange.max, Math.max(zoomRange.min, zoomValue + d * step));
       try{
         await zoomTrack.applyConstraints({ advanced: [{ zoom: v }] });
         zoomValue = v;
       }catch(e){}
-    } else {
-      zoomDigital = Math.min(3, Math.max(1, +(zoomDigital + d * 0.25).toFixed(2)));
-      zoomValue = zoomDigital;
-      applyMirror();
     }
     updateZoomLabel();
   }
@@ -463,6 +501,7 @@
       await startCamera();
       prepareScrollText();
       resetScroll();
+      startFrameLoop();
       showView("prompt");
       requestWakeLock();
     }catch(err){
@@ -583,28 +622,13 @@
   $("zoomOutBtn").addEventListener("click", () => bumpZoom(-1));
 
   // ---------- Recording ----------
-  // Portrait pipeline: Android cameras often deliver landscape frames even when the
-  // phone is upright, so we record via a 1080x1920 canvas cropped to match the preview.
-  let recCanvas = null, recCtx = null, drawRaf = null, canvasStream = null;
-  function startPortraitPipeline(){
-    if (!recCanvas){ recCanvas = document.createElement("canvas"); }
-    recCanvas.width = 1080; recCanvas.height = 1920;
-    recCtx = recCanvas.getContext("2d");
+  // The recorder captures the live preview canvas, so output matches the preview exactly.
+  let canvasStream = null;
+  function startRecordingStream(){
     canvasStream = recCanvas.captureStream(30);
-    const drawFrame = () => {
-      const v = cameraFeed, vw = v.videoWidth, vh = v.videoHeight;
-      if (vw && vh){
-        const scale = Math.max(recCanvas.width / vw, recCanvas.height / vh) * (zoomDigital > 1 ? zoomDigital : 1);
-        const sw = recCanvas.width / scale, sh = recCanvas.height / scale;
-        recCtx.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, recCanvas.width, recCanvas.height);
-      }
-      drawRaf = requestAnimationFrame(drawFrame);
-    };
-    drawFrame();
     return new MediaStream([ ...canvasStream.getVideoTracks(), ...state.stream.getAudioTracks() ]);
   }
-  function stopPortraitPipeline(){
-    if (drawRaf !== null){ cancelAnimationFrame(drawRaf); drawRaf = null; }
+  function stopRecordingStream(){
     if (canvasStream){ canvasStream.getTracks().forEach(t => t.stop()); canvasStream = null; }
   }
 
@@ -663,12 +687,12 @@
     const { mime, ext } = pickMimeType();
     state.mimeType = mime; state.ext = ext;
     state.chunks = [];
-    const recStream = startPortraitPipeline();
+    const recStream = startRecordingStream();
     try{
       state.recorder = mime ? new MediaRecorder(recStream, { mimeType: mime, videoBitsPerSecond: 8000000 })
                             : new MediaRecorder(recStream, { videoBitsPerSecond: 8000000 });
     }catch(e){
-      stopPortraitPipeline();
+      stopRecordingStream();
       alert("Recording could not start: " + e.message);
       return;
     }
@@ -703,7 +727,8 @@
   }
 
   function onRecorderStop(){
-    stopPortraitPipeline();
+    stopRecordingStream();
+    stopFrameLoop();
     if (!state.chunks.length){ return; }
     if (state.blobUrl) URL.revokeObjectURL(state.blobUrl);
     state.blob = new Blob(state.chunks, { type: state.mimeType || "video/webm" });
@@ -730,9 +755,10 @@
       }
       recordBtn.classList.remove("recording");
       $("recIndicator").classList.remove("show");
-      stopPortraitPipeline();
+      stopRecordingStream();
     }
     setScrolling(false);
+    stopFrameLoop();
     stopCamera();
     releaseWakeLock();
     showView("setup");
@@ -771,6 +797,7 @@
       await startCamera();
       prepareScrollText();
       resetScroll();
+      startFrameLoop();
       showView("prompt");
       requestWakeLock();
     }catch(e){
@@ -782,6 +809,7 @@
   $("editBtn").addEventListener("click", () => showView("setup"));
 
   // ---------- Init ----------
+  initPreviewCanvas();
   refreshSettingLabels();
   updateReadout();
   window.addEventListener("orientationchange", () => {
