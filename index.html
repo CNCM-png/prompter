@@ -534,6 +534,31 @@
   $("fontDown").addEventListener("click", () => bumpFont(-1));
 
   // ---------- Recording ----------
+  // Portrait pipeline: Android cameras often deliver landscape frames even when the
+  // phone is upright, so we record via a 1080x1920 canvas cropped to match the preview.
+  let recCanvas = null, recCtx = null, drawRaf = null, canvasStream = null;
+  function startPortraitPipeline(){
+    if (!recCanvas){ recCanvas = document.createElement("canvas"); }
+    recCanvas.width = 1080; recCanvas.height = 1920;
+    recCtx = recCanvas.getContext("2d");
+    canvasStream = recCanvas.captureStream(30);
+    const drawFrame = () => {
+      const v = cameraFeed, vw = v.videoWidth, vh = v.videoHeight;
+      if (vw && vh){
+        const scale = Math.max(recCanvas.width / vw, recCanvas.height / vh);
+        const sw = recCanvas.width / scale, sh = recCanvas.height / scale;
+        recCtx.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, recCanvas.width, recCanvas.height);
+      }
+      drawRaf = requestAnimationFrame(drawFrame);
+    };
+    drawFrame();
+    return new MediaStream([ ...canvasStream.getVideoTracks(), ...state.stream.getAudioTracks() ]);
+  }
+  function stopPortraitPipeline(){
+    if (drawRaf !== null){ cancelAnimationFrame(drawRaf); drawRaf = null; }
+    if (canvasStream){ canvasStream.getTracks().forEach(t => t.stop()); canvasStream = null; }
+  }
+
   function pickMimeType(){
     const candidates = [
       ["video/mp4;codecs=avc1,mp4a.40.2", "mp4"],
@@ -589,10 +614,12 @@
     const { mime, ext } = pickMimeType();
     state.mimeType = mime; state.ext = ext;
     state.chunks = [];
+    const recStream = startPortraitPipeline();
     try{
-      state.recorder = mime ? new MediaRecorder(state.stream, { mimeType: mime })
-                            : new MediaRecorder(state.stream);
+      state.recorder = mime ? new MediaRecorder(recStream, { mimeType: mime, videoBitsPerSecond: 8000000 })
+                            : new MediaRecorder(recStream, { videoBitsPerSecond: 8000000 });
     }catch(e){
+      stopPortraitPipeline();
       alert("Recording could not start: " + e.message);
       return;
     }
@@ -627,6 +654,7 @@
   }
 
   function onRecorderStop(){
+    stopPortraitPipeline();
     if (!state.chunks.length){ return; }
     if (state.blobUrl) URL.revokeObjectURL(state.blobUrl);
     state.blob = new Blob(state.chunks, { type: state.mimeType || "video/webm" });
@@ -653,6 +681,7 @@
       }
       recordBtn.classList.remove("recording");
       $("recIndicator").classList.remove("show");
+      stopPortraitPipeline();
     }
     setScrolling(false);
     stopCamera();
