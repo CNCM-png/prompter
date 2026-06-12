@@ -249,6 +249,12 @@
         <span class="val" id="speedLive">4</span>
         <button type="button" id="speedUp" aria-label="Faster">+</button>
       </div>
+      <div class="mini" aria-label="Zoom">
+        <span class="tag">Zoom</span>
+        <button type="button" id="zoomOutBtn" aria-label="Zoom out">−</button>
+        <span class="val" id="zoomLive">1.0x</span>
+        <button type="button" id="zoomInBtn" aria-label="Zoom in">+</button>
+      </div>
     </div>
     <button id="recordBtn" aria-label="Start or stop recording"><span class="core"></span></button>
     <div class="miniGroup right">
@@ -368,22 +374,63 @@
   // ---------- Camera ----------
   const cameraFeed = $("cameraFeed");
 
+  // Zoom: optical via the camera where the device supports it, digital otherwise
+  let zoomTrack = null, zoomRange = null, zoomValue = 1, zoomDigital = 1;
+
   function applyMirror(){
-    const mirrored = state.mirror && state.facing === "user";
-    cameraFeed.classList.toggle("mirrored", mirrored);
+    const mir = state.mirror && state.facing === "user";
+    cameraFeed.style.transform = (mir ? "scaleX(-1)" : "") + (zoomDigital > 1 ? " scale(" + zoomDigital + ")" : "");
+  }
+
+  function initZoom(track){
+    zoomTrack = null; zoomRange = null; zoomDigital = 1; zoomValue = 1;
+    try{
+      const caps = track.getCapabilities ? track.getCapabilities() : {};
+      if (caps.zoom && typeof caps.zoom.min === "number"){
+        zoomTrack = track;
+        zoomRange = { min: caps.zoom.min, max: caps.zoom.max, step: caps.zoom.step || 0.1 };
+        const s = track.getSettings();
+        zoomValue = (s && s.zoom) || zoomRange.min || 1;
+      }
+    }catch(e){}
+    updateZoomLabel();
+  }
+  function updateZoomLabel(){
+    const el = $("zoomLive");
+    if (el) el.textContent = zoomValue.toFixed(1) + "x";
+  }
+  async function bumpZoom(d){
+    if (zoomTrack && zoomRange){
+      const step = Math.max(zoomRange.step || 0.1, (zoomRange.max - zoomRange.min) / 12);
+      const v = Math.min(zoomRange.max, Math.max(zoomRange.min, zoomValue + d * step));
+      try{
+        await zoomTrack.applyConstraints({ advanced: [{ zoom: v }] });
+        zoomValue = v;
+      }catch(e){}
+    } else {
+      zoomDigital = Math.min(3, Math.max(1, +(zoomDigital + d * 0.25).toFixed(2)));
+      zoomValue = zoomDigital;
+      applyMirror();
+    }
+    updateZoomLabel();
   }
 
   async function startCamera(){
     stopCamera();
-    const constraints = {
+    state.stream = await navigator.mediaDevices.getUserMedia({
       audio: true,
-      video: {
-        facingMode: state.facing,
-        width:  { ideal: 1080 },
-        height: { ideal: 1920 }
+      video: { facingMode: state.facing, width: { ideal: 1080 }, height: { ideal: 1920 }, aspectRatio: { ideal: 9/16 } }
+    });
+    const track = state.stream.getVideoTracks()[0];
+    // Some Android cameras hand over landscape frames even held upright; asking again for
+    // portrait uses the sensor's long axis vertically and widens the shot considerably.
+    try{
+      const s = track.getSettings();
+      if (s.width && s.height && s.width > s.height){
+        await track.applyConstraints({ width: { ideal: 1080 }, height: { ideal: 1920 }, aspectRatio: { ideal: 9/16 } });
       }
-    };
-    state.stream = await navigator.mediaDevices.getUserMedia(constraints);
+    }catch(e){}
+    initZoom(track);
     cameraFeed.srcObject = state.stream;
     applyMirror();
   }
@@ -532,6 +579,8 @@
   $("speedDown").addEventListener("click", () => bumpSpeed(-1));
   $("fontUp").addEventListener("click", () => bumpFont(1));
   $("fontDown").addEventListener("click", () => bumpFont(-1));
+  $("zoomInBtn").addEventListener("click", () => bumpZoom(1));
+  $("zoomOutBtn").addEventListener("click", () => bumpZoom(-1));
 
   // ---------- Recording ----------
   // Portrait pipeline: Android cameras often deliver landscape frames even when the
@@ -545,7 +594,7 @@
     const drawFrame = () => {
       const v = cameraFeed, vw = v.videoWidth, vh = v.videoHeight;
       if (vw && vh){
-        const scale = Math.max(recCanvas.width / vw, recCanvas.height / vh);
+        const scale = Math.max(recCanvas.width / vw, recCanvas.height / vh) * (zoomDigital > 1 ? zoomDigital : 1);
         const sw = recCanvas.width / scale, sh = recCanvas.height / scale;
         recCtx.drawImage(v, (vw - sw) / 2, (vh - sh) / 2, sw, sh, 0, 0, recCanvas.width, recCanvas.height);
       }
@@ -690,14 +739,20 @@
   });
 
   // ---------- Review ----------
+  let saveBusy = false;
   $("saveBtn").addEventListener("click", () => {
-    if (!state.blob) return;
+    if (!state.blob || saveBusy) return;
+    saveBusy = true;
+    const btn = $("saveBtn");
+    const original = btn.textContent;
+    btn.textContent = "Saving — check your notification bar";
     const a = document.createElement("a");
     a.href = state.blobUrl;
     a.download = "prompter-take-" + new Date().toISOString().replace(/[:.]/g,"-").slice(0,19) + "." + state.ext;
     document.body.appendChild(a);
     a.click();
     a.remove();
+    setTimeout(() => { btn.textContent = original; saveBusy = false; }, 3000);
   });
 
   $("shareBtn").addEventListener("click", async () => {
