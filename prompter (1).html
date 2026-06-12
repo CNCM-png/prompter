@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en-GB">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#101418">
+<title>Prompter — camera teleprompter</title>
+<style>
+  :root{
+    --ink:#101418;          /* studio charcoal */
+    --panel:#1a2026;        /* raised panel */
+    --line:#2c343c;         /* hairline */
+    --paper:#f3efe7;        /* warm script paper */
+    --paper-dim:#b9b4a8;    /* secondary text */
+    --cue:#e8b341;          /* amber cue */
+    --rec:#e4452f;          /* on-air red */
+    --ok:#5fae7e;
+    --display:"Noto Serif", Georgia, "Times New Roman", serif;
+    --ui:system-ui, Roboto, "Segoe UI", sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  html,body{height:100%}
+  body{
+    background:var(--ink);color:var(--paper);font-family:var(--ui);
+    overflow:hidden;overscroll-behavior:none;
+    padding:env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  button{font-family:var(--ui);border:none;background:none;color:inherit;cursor:pointer}
+  .view{position:fixed;inset:0;display:none;flex-direction:column}
+  .view.active{display:flex}
+
+  /* ---------- Setup ---------- */
+  #setupView{padding:20px 18px;gap:14px;overflow-y:auto}
+  .masthead{display:flex;align-items:baseline;justify-content:space-between;border-bottom:2px solid var(--paper);padding-bottom:10px}
+  .masthead h1{font-family:var(--display);font-weight:700;font-size:26px;letter-spacing:.01em}
+  .masthead .kicker{font-size:11px;letter-spacing:.18em;text-transform:uppercase;color:var(--cue)}
+  label.fieldlabel{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--paper-dim)}
+  #scriptInput{
+    width:100%;min-height:34vh;resize:vertical;background:var(--panel);
+    color:var(--paper);border:1px solid var(--line);border-radius:10px;
+    padding:14px;font-family:var(--display);font-size:17px;line-height:1.55;
+  }
+  #scriptInput:focus{outline:2px solid var(--cue);outline-offset:1px}
+  .readout{display:flex;gap:18px;font-size:12px;color:var(--paper-dim)}
+  .readout b{color:var(--paper);font-variant-numeric:tabular-nums}
+  .controlrow{display:flex;align-items:center;justify-content:space-between;gap:12px;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .controlrow .name{font-size:14px}
+  .controlrow .hint{font-size:11px;color:var(--paper-dim);margin-top:2px}
+  input[type=range]{flex:1;accent-color:var(--cue);min-width:90px}
+  .stepper{display:flex;align-items:center;gap:10px}
+  .stepper button{width:36px;height:36px;border-radius:8px;background:var(--ink);border:1px solid var(--line);font-size:18px;color:var(--paper)}
+  .stepper span{min-width:42px;text-align:center;font-variant-numeric:tabular-nums}
+  .toggle{position:relative;width:48px;height:28px;border-radius:14px;background:var(--line);transition:background .15s;flex:none}
+  .toggle.on{background:var(--cue)}
+  .toggle::after{content:"";position:absolute;top:3px;left:3px;width:22px;height:22px;border-radius:50%;background:var(--paper);transition:left .15s}
+  .toggle.on::after{left:23px}
+  #openCameraBtn{
+    margin-top:4px;padding:16px;border-radius:12px;background:var(--rec);color:#fff;
+    font-size:16px;font-weight:600;letter-spacing:.02em;
+  }
+  #openCameraBtn:disabled{background:var(--line);color:var(--paper-dim)}
+  .note{font-size:12px;color:var(--paper-dim);line-height:1.5}
+  .err{display:none;background:#3a1d18;border:1px solid var(--rec);border-radius:10px;padding:12px 14px;font-size:13px;line-height:1.5}
+  .err.show{display:block}
+
+  /* ---------- Prompter ---------- */
+  #promptView{background:#000}
+  #cameraWrap{position:absolute;inset:0;overflow:hidden}
+  #cameraFeed{width:100%;height:100%;object-fit:cover}
+  #cameraFeed.mirrored{transform:scaleX(-1)}
+  #scrollZone{
+    position:absolute;top:0;left:0;right:0;height:58%;
+    overflow:hidden;
+    background:linear-gradient(to bottom, rgba(8,10,12,.78) 0%, rgba(8,10,12,.66) 70%, rgba(8,10,12,0) 100%);
+    -webkit-mask-image:linear-gradient(to bottom,#000 0%,#000 82%,transparent 100%);
+            mask-image:linear-gradient(to bottom,#000 0%,#000 82%,transparent 100%);
+  }
+  #scrollText{
+    padding:0 20px;font-family:var(--display);color:var(--paper);
+    text-shadow:0 1px 3px rgba(0,0,0,.7);line-height:1.5;will-change:transform;
+    white-space:pre-wrap;word-wrap:break-word;
+  }
+  #cueLine{
+    position:absolute;left:0;right:0;top:24%;height:0;pointer-events:none;
+    border-top:2px solid var(--cue);opacity:.9;
+  }
+  #cueLine::before{
+    content:"";position:absolute;left:6px;top:-7px;
+    border:6px solid transparent;border-left:9px solid var(--cue);
+  }
+  #pauseBadge{
+    position:absolute;top:calc(24% + 10px);right:12px;
+    font-size:11px;letter-spacing:.12em;text-transform:uppercase;
+    background:rgba(0,0,0,.55);border:1px solid var(--cue);color:var(--cue);
+    padding:4px 10px;border-radius:999px;display:none;
+  }
+  #pauseBadge.show{display:block}
+
+  .topBar{
+    position:absolute;top:0;left:0;right:0;display:flex;align-items:center;justify-content:space-between;
+    padding:calc(10px + env(safe-area-inset-top)) 12px 10px;z-index:5;
+  }
+  .roundBtn{
+    width:42px;height:42px;border-radius:50%;background:rgba(0,0,0,.5);
+    border:1px solid rgba(255,255,255,.25);color:#fff;font-size:17px;
+    display:flex;align-items:center;justify-content:center;
+  }
+  #recIndicator{
+    display:none;align-items:center;gap:8px;background:rgba(0,0,0,.55);
+    border:1px solid var(--rec);border-radius:999px;padding:6px 14px;
+    font-variant-numeric:tabular-nums;font-size:14px;
+  }
+  #recIndicator.show{display:flex}
+  #recDot{width:10px;height:10px;border-radius:50%;background:var(--rec);animation:pulse 1.1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+  @media (prefers-reduced-motion:reduce){#recDot{animation:none}}
+
+  .bottomBar{
+    position:absolute;left:0;right:0;bottom:0;z-index:5;
+    padding:10px 14px calc(16px + env(safe-area-inset-bottom));
+    display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;
+    background:linear-gradient(to top, rgba(0,0,0,.65), rgba(0,0,0,0));
+  }
+  .miniGroup{display:flex;flex-direction:column;gap:8px;align-items:flex-start}
+  .miniGroup.right{align-items:flex-end}
+  .mini{
+    display:flex;align-items:center;gap:6px;background:rgba(0,0,0,.5);
+    border:1px solid rgba(255,255,255,.22);border-radius:999px;padding:5px 8px;font-size:13px;
+  }
+  .mini button{width:30px;height:30px;border-radius:50%;font-size:16px;color:#fff;background:rgba(255,255,255,.08)}
+  .mini .val{min-width:34px;text-align:center;font-variant-numeric:tabular-nums;font-size:12px;color:var(--paper)}
+  .mini .tag{font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--paper-dim);padding-left:2px}
+  #recordBtn{
+    width:76px;height:76px;border-radius:50%;border:4px solid #fff;background:transparent;
+    display:flex;align-items:center;justify-content:center;justify-self:center;
+  }
+  #recordBtn .core{width:58px;height:58px;border-radius:50%;background:var(--rec);transition:border-radius .15s, transform .15s}
+  #recordBtn.recording .core{border-radius:10px;transform:scale(.62)}
+  #countdownOverlay{
+    position:absolute;inset:0;z-index:8;display:none;align-items:center;justify-content:center;
+    background:rgba(0,0,0,.45);
+  }
+  #countdownOverlay.show{display:flex}
+  #countdownNum{font-family:var(--display);font-size:120px;font-weight:700;color:var(--cue);text-shadow:0 2px 14px rgba(0,0,0,.8)}
+
+  /* ---------- Review ---------- */
+  #reviewView{padding:16px;gap:14px;overflow-y:auto}
+  #reviewView h2{font-family:var(--display);font-size:22px}
+  #playback{width:100%;max-height:62vh;background:#000;border-radius:12px;border:1px solid var(--line)}
+  .btnRow{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .btn{
+    padding:14px;border-radius:10px;font-size:15px;font-weight:600;text-align:center;
+    background:var(--panel);border:1px solid var(--line);color:var(--paper);
+  }
+  .btn.primary{background:var(--rec);border-color:var(--rec);color:#fff}
+  .btn.full{grid-column:1 / -1}
+  #fileMeta{font-size:12px;color:var(--paper-dim)}
+</style>
+</head>
+<body>
+
+<!-- ================= SETUP ================= -->
+<div class="view active" id="setupView">
+  <div class="masthead">
+    <h1>Prompter</h1>
+    <span class="kicker">Camera teleprompter</span>
+  </div>
+
+  <div class="err" id="setupError"></div>
+
+  <label class="fieldlabel" for="scriptInput">Your script</label>
+  <textarea id="scriptInput" placeholder="Paste or type your script here. It will scroll over the camera while you record." spellcheck="true"></textarea>
+  <div class="readout">
+    <span><b id="wordCount">0</b> words</span>
+    <span>~<b id="readTime">0:00</b> read time</span>
+  </div>
+
+  <div class="controlrow">
+    <div>
+      <div class="name">Text size</div>
+      <div class="hint">How large the script appears on screen</div>
+    </div>
+    <div class="stepper">
+      <button type="button" data-step="font" data-dir="-1" aria-label="Smaller text">−</button>
+      <span id="fontVal">34</span>
+      <button type="button" data-step="font" data-dir="1" aria-label="Larger text">+</button>
+    </div>
+  </div>
+
+  <div class="controlrow">
+    <div style="flex:1">
+      <div class="name">Scroll speed</div>
+      <div class="hint">Adjustable while recording too</div>
+    </div>
+    <input type="range" id="speedRange" min="1" max="10" step="1" value="4" aria-label="Scroll speed">
+    <span id="speedVal" style="min-width:20px;text-align:right">4</span>
+  </div>
+
+  <div class="controlrow">
+    <div>
+      <div class="name">Countdown</div>
+      <div class="hint">Delay before recording starts</div>
+    </div>
+    <div class="stepper">
+      <button type="button" data-step="count" data-dir="-1" aria-label="Shorter countdown">−</button>
+      <span id="countVal">3s</span>
+      <button type="button" data-step="count" data-dir="1" aria-label="Longer countdown">+</button>
+    </div>
+  </div>
+
+  <div class="controlrow">
+    <div>
+      <div class="name">Mirror preview</div>
+      <div class="hint">Preview only. The saved video is never flipped.</div>
+    </div>
+    <button type="button" class="toggle on" id="mirrorToggle" role="switch" aria-checked="true" aria-label="Mirror preview"></button>
+  </div>
+
+  <button id="openCameraBtn" type="button">Open camera</button>
+  <p class="note">Works best in Chrome on Android, held in portrait. You will be asked for camera and microphone permission the first time. Tap the scrolling text at any point to pause or resume it.</p>
+</div>
+
+<!-- ================= PROMPTER ================= -->
+<div class="view" id="promptView">
+  <div id="cameraWrap">
+    <video id="cameraFeed" autoplay playsinline muted></video>
+  </div>
+
+  <div id="scrollZone">
+    <div id="scrollText"></div>
+  </div>
+  <div id="cueLine"></div>
+  <div id="pauseBadge">Paused — tap text to resume</div>
+
+  <div class="topBar">
+    <button class="roundBtn" id="closePromptBtn" aria-label="Back to script">✕</button>
+    <div id="recIndicator"><span id="recDot"></span><span id="recTimer">0:00</span></div>
+    <div style="display:flex;gap:8px">
+      <button class="roundBtn" id="restartTextBtn" aria-label="Restart script from top" title="Restart script">↺</button>
+      <button class="roundBtn" id="flipCamBtn" aria-label="Switch camera">⟲</button>
+    </div>
+  </div>
+
+  <div class="bottomBar">
+    <div class="miniGroup">
+      <div class="mini" aria-label="Scroll speed">
+        <span class="tag">Speed</span>
+        <button type="button" id="speedDown" aria-label="Slower">−</button>
+        <span class="val" id="speedLive">4</span>
+        <button type="button" id="speedUp" aria-label="Faster">+</button>
+      </div>
+    </div>
+    <button id="recordBtn" aria-label="Start or stop recording"><span class="core"></span></button>
+    <div class="miniGroup right">
+      <div class="mini" aria-label="Text size">
+        <span class="tag">Aa</span>
+        <button type="button" id="fontDown" aria-label="Smaller">−</button>
+        <span class="val" id="fontLive">34</span>
+        <button type="button" id="fontUp" aria-label="Larger">+</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="countdownOverlay"><span id="countdownNum">3</span></div>
+</div>
+
+<!-- ================= REVIEW ================= -->
+<div class="view" id="reviewView">
+  <h2>Your take</h2>
+  <video id="playback" controls playsinline></video>
+  <div id="fileMeta"></div>
+  <div class="btnRow">
+    <button class="btn primary full" id="saveBtn" type="button">Save video</button>
+    <button class="btn" id="shareBtn" type="button">Share</button>
+    <button class="btn" id="retakeBtn" type="button">Record again</button>
+    <button class="btn full" id="editBtn" type="button">Edit script</button>
+  </div>
+  <p class="note">The saved file is not mirrored, so it will cut cleanly in editors such as CapCut without flipping between scenes.</p>
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  // ---------- State (in memory only) ----------
+  const state = {
+    fontSize: 34,        // px
+    speed: 4,            // 1..10
+    countdown: 3,        // seconds
+    mirror: true,
+    facing: "user",
+    stream: null,
+    recorder: null,
+    chunks: [],
+    recording: false,
+    scrolling: false,
+    scrollY: 0,
+    lastFrame: null,
+    rafId: null,
+    recStart: 0,
+    recTimerId: null,
+    wakeLock: null,
+    blob: null,
+    blobUrl: null,
+    mimeType: "",
+    ext: "webm"
+  };
+
+  const $ = id => document.getElementById(id);
+  const views = { setup: $("setupView"), prompt: $("promptView"), review: $("reviewView") };
+
+  function showView(name){
+    Object.values(views).forEach(v => v.classList.remove("active"));
+    views[name].classList.add("active");
+  }
+
+  // ---------- Setup screen ----------
+  const scriptInput = $("scriptInput");
+
+  function updateReadout(){
+    const words = scriptInput.value.trim().split(/\s+/).filter(Boolean).length;
+    $("wordCount").textContent = words;
+    const secs = Math.round(words / 150 * 60); // ~150 wpm spoken
+    $("readTime").textContent = Math.floor(secs/60) + ":" + String(secs%60).padStart(2,"0");
+  }
+  scriptInput.addEventListener("input", updateReadout);
+
+  function refreshSettingLabels(){
+    $("fontVal").textContent = state.fontSize;
+    $("fontLive").textContent = state.fontSize;
+    $("speedVal").textContent = state.speed;
+    $("speedLive").textContent = state.speed;
+    $("speedRange").value = state.speed;
+    $("countVal").textContent = state.countdown + "s";
+  }
+
+  document.querySelectorAll("[data-step]").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const dir = parseInt(btn.dataset.dir, 10);
+      if (btn.dataset.step === "font"){
+        state.fontSize = Math.min(64, Math.max(20, state.fontSize + dir * 2));
+      } else {
+        state.countdown = Math.min(10, Math.max(0, state.countdown + dir));
+      }
+      refreshSettingLabels();
+    });
+  });
+
+  $("speedRange").addEventListener("input", e => {
+    state.speed = parseInt(e.target.value, 10);
+    refreshSettingLabels();
+  });
+
+  $("mirrorToggle").addEventListener("click", () => {
+    state.mirror = !state.mirror;
+    const t = $("mirrorToggle");
+    t.classList.toggle("on", state.mirror);
+    t.setAttribute("aria-checked", String(state.mirror));
+    applyMirror();
+  });
+
+  function setupError(msg){
+    const el = $("setupError");
+    el.textContent = msg;
+    el.classList.add("show");
+  }
+
+  // ---------- Camera ----------
+  const cameraFeed = $("cameraFeed");
+
+  function applyMirror(){
+    const mirrored = state.mirror && state.facing === "user";
+    cameraFeed.classList.toggle("mirrored", mirrored);
+  }
+
+  async function startCamera(){
+    stopCamera();
+    const constraints = {
+      audio: true,
+      video: {
+        facingMode: state.facing,
+        width:  { ideal: 1080 },
+        height: { ideal: 1920 }
+      }
+    };
+    state.stream = await navigator.mediaDevices.getUserMedia(constraints);
+    cameraFeed.srcObject = state.stream;
+    applyMirror();
+  }
+
+  function stopCamera(){
+    if (state.stream){
+      state.stream.getTracks().forEach(t => t.stop());
+      state.stream = null;
+    }
+  }
+
+  $("openCameraBtn").addEventListener("click", async () => {
+    $("setupError").classList.remove("show");
+    if (!scriptInput.value.trim()){
+      setupError("Add a script first. Even a few lines will do.");
+      return;
+    }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      setupError("This browser cannot access the camera. Open this page in Chrome on Android over HTTPS (or as a saved file in Chrome).");
+      return;
+    }
+    if (typeof MediaRecorder === "undefined"){
+      setupError("This browser cannot record video (MediaRecorder is unavailable). Try the latest version of Chrome.");
+      return;
+    }
+    const btn = $("openCameraBtn");
+    btn.disabled = true;
+    btn.textContent = "Requesting camera…";
+    try{
+      await startCamera();
+      prepareScrollText();
+      resetScroll();
+      showView("prompt");
+      requestWakeLock();
+    }catch(err){
+      if (err && (err.name === "NotAllowedError" || err.name === "SecurityError")){
+        setupError("Camera permission was refused. Allow camera and microphone access for this page in Chrome's site settings, then try again.");
+      }else if (err && err.name === "NotFoundError"){
+        setupError("No camera was found on this device.");
+      }else{
+        setupError("Could not start the camera: " + (err && err.message ? err.message : err));
+      }
+    }finally{
+      btn.disabled = false;
+      btn.textContent = "Open camera";
+    }
+  });
+
+  $("flipCamBtn").addEventListener("click", async () => {
+    if (state.recording) return; // avoid breaking an active recording
+    state.facing = state.facing === "user" ? "environment" : "user";
+    try{ await startCamera(); }
+    catch(e){ state.facing = state.facing === "user" ? "environment" : "user"; }
+  });
+
+  // ---------- Wake lock ----------
+  async function requestWakeLock(){
+    try{
+      if ("wakeLock" in navigator){
+        state.wakeLock = await navigator.wakeLock.request("screen");
+      }
+    }catch(e){ /* non-fatal */ }
+  }
+  function releaseWakeLock(){
+    if (state.wakeLock){ state.wakeLock.release().catch(()=>{}); state.wakeLock = null; }
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && views.prompt.classList.contains("active")){
+      requestWakeLock();
+    }
+  });
+
+  // ---------- Teleprompter scroll ----------
+  const scrollZone = $("scrollZone");
+  const scrollText = $("scrollText");
+
+  function prepareScrollText(){
+    scrollText.textContent = scriptInput.value;
+    scrollText.style.fontSize = state.fontSize + "px";
+  }
+
+  function cueOffset(){
+    // Distance from top of scroll zone to the cue line (cue sits at 24% of viewport height)
+    return window.innerHeight * 0.24;
+  }
+
+  function resetScroll(){
+    state.scrollY = -cueOffset() - 10; // first line begins just below the cue line
+    renderScroll();
+    setScrolling(false);
+  }
+
+  function renderScroll(){
+    scrollText.style.transform = "translateY(" + (-state.scrollY) + "px)";
+  }
+
+  function pxPerSecond(){
+    // Speed 1..10 mapped against font size so larger text scrolls proportionally
+    return state.speed * state.fontSize * 0.55;
+  }
+
+  function setScrolling(on){
+    state.scrolling = on;
+    $("pauseBadge").classList.toggle("show", !on && views.prompt.classList.contains("active"));
+    if (on && state.rafId === null){
+      state.lastFrame = performance.now();
+      state.rafId = requestAnimationFrame(tick);
+    }
+  }
+
+  function tick(now){
+    state.rafId = null;
+    if (!views.prompt.classList.contains("active")) return;
+    if (state.scrolling){
+      const dt = (now - state.lastFrame) / 1000;
+      state.lastFrame = now;
+      state.scrollY += pxPerSecond() * dt;
+      const max = scrollText.offsetHeight + 40;
+      if (state.scrollY >= max){
+        state.scrollY = max;
+        setScrolling(false); // reached the end
+      }
+      renderScroll();
+      state.rafId = requestAnimationFrame(tick);
+    }
+  }
+
+  scrollZone.addEventListener("click", () => {
+    // Tap to pause/resume; hide badge when nothing to scroll yet
+    setScrolling(!state.scrolling);
+  });
+
+  $("restartTextBtn").addEventListener("click", () => resetScroll());
+
+  // Live speed / font controls
+  function bumpSpeed(d){
+    state.speed = Math.min(10, Math.max(1, state.speed + d));
+    refreshSettingLabels();
+  }
+  function bumpFont(d){
+    state.fontSize = Math.min(64, Math.max(20, state.fontSize + d * 2));
+    scrollText.style.fontSize = state.fontSize + "px";
+    refreshSettingLabels();
+  }
+  $("speedUp").addEventListener("click", () => bumpSpeed(1));
+  $("speedDown").addEventListener("click", () => bumpSpeed(-1));
+  $("fontUp").addEventListener("click", () => bumpFont(1));
+  $("fontDown").addEventListener("click", () => bumpFont(-1));
+
+  // ---------- Recording ----------
+  function pickMimeType(){
+    const candidates = [
+      ["video/mp4;codecs=avc1,mp4a.40.2", "mp4"],
+      ["video/mp4", "mp4"],
+      ["video/webm;codecs=vp9,opus", "webm"],
+      ["video/webm;codecs=vp8,opus", "webm"],
+      ["video/webm", "webm"]
+    ];
+    for (const [m, ext] of candidates){
+      if (MediaRecorder.isTypeSupported(m)) return { mime: m, ext };
+    }
+    return { mime: "", ext: "webm" };
+  }
+
+  let countdownAbort = false;
+
+  function runCountdown(seconds){
+    return new Promise(resolve => {
+      if (seconds <= 0){ resolve(true); return; }
+      countdownAbort = false;
+      const overlay = $("countdownOverlay");
+      const num = $("countdownNum");
+      let n = seconds;
+      num.textContent = n;
+      overlay.classList.add("show");
+      const iv = setInterval(() => {
+        if (countdownAbort){
+          clearInterval(iv); overlay.classList.remove("show"); resolve(false); return;
+        }
+        n -= 1;
+        if (n <= 0){
+          clearInterval(iv); overlay.classList.remove("show"); resolve(true);
+        }else{
+          num.textContent = n;
+        }
+      }, 1000);
+    });
+  }
+
+  $("countdownOverlay").addEventListener("click", () => { countdownAbort = true; });
+
+  const recordBtn = $("recordBtn");
+
+  recordBtn.addEventListener("click", async () => {
+    if (state.recording){ stopRecording(); return; }
+    if (!state.stream) return;
+
+    recordBtn.disabled = true;
+    const proceed = await runCountdown(state.countdown);
+    recordBtn.disabled = false;
+    if (!proceed) return;
+
+    const { mime, ext } = pickMimeType();
+    state.mimeType = mime; state.ext = ext;
+    state.chunks = [];
+    try{
+      state.recorder = mime ? new MediaRecorder(state.stream, { mimeType: mime })
+                            : new MediaRecorder(state.stream);
+    }catch(e){
+      alert("Recording could not start: " + e.message);
+      return;
+    }
+    state.recorder.ondataavailable = e => { if (e.data && e.data.size) state.chunks.push(e.data); };
+    state.recorder.onstop = onRecorderStop;
+    state.recorder.start(1000);
+
+    state.recording = true;
+    recordBtn.classList.add("recording");
+    $("recIndicator").classList.add("show");
+    state.recStart = Date.now();
+    updateRecTimer();
+    state.recTimerId = setInterval(updateRecTimer, 500);
+    setScrolling(true);
+  });
+
+  function updateRecTimer(){
+    const s = Math.floor((Date.now() - state.recStart) / 1000);
+    $("recTimer").textContent = Math.floor(s/60) + ":" + String(s%60).padStart(2,"0");
+  }
+
+  function stopRecording(){
+    if (!state.recording) return;
+    state.recording = false;
+    setScrolling(false);
+    clearInterval(state.recTimerId);
+    recordBtn.classList.remove("recording");
+    $("recIndicator").classList.remove("show");
+    if (state.recorder && state.recorder.state !== "inactive"){
+      state.recorder.stop();
+    }
+  }
+
+  function onRecorderStop(){
+    if (!state.chunks.length){ return; }
+    if (state.blobUrl) URL.revokeObjectURL(state.blobUrl);
+    state.blob = new Blob(state.chunks, { type: state.mimeType || "video/webm" });
+    state.blobUrl = URL.createObjectURL(state.blob);
+    const pb = $("playback");
+    pb.src = state.blobUrl;
+    const mb = (state.blob.size / (1024*1024)).toFixed(1);
+    $("fileMeta").textContent = "Format: ." + state.ext + "  ·  Size: " + mb + " MB  ·  Saved file is unmirrored.";
+    stopCamera();
+    releaseWakeLock();
+    showView("review");
+  }
+
+  // ---------- Prompter top bar ----------
+  $("closePromptBtn").addEventListener("click", () => {
+    if (state.recording){
+      if (!confirm("Stop recording and discard this take?")) return;
+      state.recording = false;
+      clearInterval(state.recTimerId);
+      if (state.recorder && state.recorder.state !== "inactive"){
+        state.recorder.ondataavailable = null;
+        state.recorder.onstop = null;
+        state.recorder.stop();
+      }
+      recordBtn.classList.remove("recording");
+      $("recIndicator").classList.remove("show");
+    }
+    setScrolling(false);
+    stopCamera();
+    releaseWakeLock();
+    showView("setup");
+  });
+
+  // ---------- Review ----------
+  $("saveBtn").addEventListener("click", () => {
+    if (!state.blob) return;
+    const a = document.createElement("a");
+    a.href = state.blobUrl;
+    a.download = "prompter-take-" + new Date().toISOString().replace(/[:.]/g,"-").slice(0,19) + "." + state.ext;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  });
+
+  $("shareBtn").addEventListener("click", async () => {
+    if (!state.blob) return;
+    const file = new File([state.blob], "prompter-take." + state.ext, { type: state.blob.type });
+    if (navigator.canShare && navigator.canShare({ files: [file] })){
+      try{ await navigator.share({ files: [file], title: "Prompter take" }); }
+      catch(e){ /* user cancelled */ }
+    }else{
+      alert("Direct sharing is not available in this browser. Use Save video, then share the file from your gallery or Files app.");
+    }
+  });
+
+  $("retakeBtn").addEventListener("click", async () => {
+    try{
+      await startCamera();
+      prepareScrollText();
+      resetScroll();
+      showView("prompt");
+      requestWakeLock();
+    }catch(e){
+      showView("setup");
+      setupError("Could not restart the camera: " + (e && e.message ? e.message : e));
+    }
+  });
+
+  $("editBtn").addEventListener("click", () => showView("setup"));
+
+  // ---------- Init ----------
+  refreshSettingLabels();
+  updateReadout();
+  window.addEventListener("orientationchange", () => {
+    if (views.prompt.classList.contains("active") && !state.recording) resetScroll();
+  });
+})();
+</script>
+</body>
+</html>
